@@ -1,0 +1,2 @@
+rootProject.name = 'ecjpake'
+include('lib')
