@@ -117,6 +117,10 @@ public class EcJpake {
     private static final byte[] SERVER_ID = "server".getBytes();
 
     public EcJpake(Role role, byte[] secret) {
+        this(role, secret, new SecureRandom());
+    }
+
+    public EcJpake(Role role, byte[] secret, SecureRandom random) {
         this.ec = ECNamedCurveTable.getParameterSpec(CURVE_NAME);
         if (this.ec == null) {
             throw new UnsupportedOperationException("Unsupported curve type");
@@ -126,9 +130,9 @@ public class EcJpake {
         } catch (NoSuchAlgorithmException e) {
             throw new UnsupportedOperationException("Unsupported hash type", e);
         }
-        this.rand = new SecureRandom();
+        this.rand = random;
         this.role = role;
-        this.s = new BigInteger(secret);
+        this.s = new BigInteger(1, secret);
         this.xm1 = null;
         this.Xm1 = null;
         this.xm2 = null;
@@ -143,7 +147,7 @@ public class EcJpake {
 
     public void readRound1(InputStream in) throws IOException {
         if (this.Xp1 != null || this.Xp2 != null) {
-            throw new IllegalStateException("Invalid state");
+            throw new IllegalStateException("Invalid protocol state");
         }
         KkppRead kkpp = this.readKkpp(in, this.ec.getG(), this.remoteId());
         this.Xp1 = kkpp.Xa;
@@ -165,7 +169,7 @@ public class EcJpake {
 
     public void readRound2(InputStream in) throws IOException {
         if (this.Xp != null || this.Xm1 == null || this.Xm2 == null || this.Xp1 == null) {
-            throw new IllegalStateException("Invalid state");
+            throw new IllegalStateException("Invalid protocol state");
         }
         if (this.role == Role.CLIENT) {
             this.readCurveId(in);
@@ -178,7 +182,7 @@ public class EcJpake {
     public void writeRound2(OutputStream out) throws IOException {
         if (this.round2 == null) {
             if (this.Xp1 == null || this.Xp2 == null || this.Xm1 == null || this.xm2 == null) {
-                throw new IllegalStateException("Invalid state");
+                throw new IllegalStateException("Invalid protocol state");
             }
             ByteArrayOutputStream out2 = new ByteArrayOutputStream();
             ECPoint G = this.Xp1.add(this.Xp2).add(this.Xm1);
@@ -197,11 +201,11 @@ public class EcJpake {
     public byte[] deriveSecret() {
         if (this.secret == null) {
             if (this.Xp == null || this.Xp2 == null || this.xm2 == null) {
-                throw new IllegalStateException("Invalid state");
+                throw new IllegalStateException("Invalid protocol state");
             }
             BigInteger xm2s = this.mulSecret(this.xm2, this.s, true /* negate */);
             ECPoint K = this.Xp.add(this.Xp2.multiply(xm2s)).multiply(this.xm2);
-            this.secret = this.hash.digest(K.getXCoord().toBigInteger().toByteArray());
+            this.secret = this.hash.digest(BigIntegers.asUnsignedByteArray(K.normalize().getXCoord().toBigInteger()));
         }
         return this.secret;
     }
@@ -245,7 +249,7 @@ public class EcJpake {
         BigInteger h = this.zkpHash(G, V, X, id);
         ECPoint VV = G.multiply(r).add(X.multiply(h.mod(this.ec.getN())));
         if (!VV.equals(V)) {
-            throw new IllegalStateException("Validation failed");
+            throw new RuntimeException("Validation failed");
         }
     }
 
@@ -268,7 +272,7 @@ public class EcJpake {
     private void writePoint(OutputStream out, ECPoint point) throws IOException {
         byte[] encoded = point.getEncoded(false /* compressed */);
         if (encoded.length > 255) {
-            throw new IllegalStateException("Encoded ECPoint is too long");
+            throw new RuntimeException("Encoded ECPoint is too long");
         }
         out.write(encoded.length);
         out.write(encoded);
@@ -283,13 +287,13 @@ public class EcJpake {
     private BigInteger readNum(InputStream in) throws IOException {
         int len = this.readByte(in);
         byte[] encoded = this.read(in, len);
-        return new BigInteger(encoded);
+        return new BigInteger(1, encoded);
     }
 
     private void writeNum(OutputStream out, BigInteger val) throws IOException {
-        byte[] encoded = val.toByteArray();
+        byte[] encoded = BigIntegers.asUnsignedByteArray(val);
         if (encoded.length > 255) {
-            throw new IllegalStateException("Encoded BigInteger is too long");
+            throw new RuntimeException("Encoded BigInteger is too long");
         }
         out.write(encoded.length);
         out.write(encoded);
@@ -298,11 +302,11 @@ public class EcJpake {
     private void readCurveId(InputStream in) throws IOException {
         int type = this.readByte(in);
         if (type != 3) { // ECCurveType.named_curve
-            throw new IllegalStateException("Invalid message");
+            throw new RuntimeException("Invalid message");
         }
         int id = this.readUint16(in);
         if (id != CURVE_ID) {
-            throw new IllegalStateException("Unexpected curve type");
+            throw new RuntimeException("Unexpected curve type");
         }
     }
 
@@ -335,7 +339,7 @@ public class EcJpake {
     private int readByte(InputStream in) throws IOException {
         int b = in.read();
         if (b < 0) {
-            throw new IllegalStateException("Unexpected end of stream");
+            throw new RuntimeException("Unexpected end of stream");
         }
         return b;
     }
@@ -346,7 +350,7 @@ public class EcJpake {
         while (offs < bytes) {
             int r = in.read(b, offs, bytes - offs);
             if (r < 0) {
-                throw new IllegalStateException("Unexpected end of stream");
+                throw new RuntimeException("Unexpected end of stream");
             }
             offs += r;
         }
@@ -361,12 +365,12 @@ public class EcJpake {
         this.writeUint32(out, id.length);
         out.write(id);
         byte[] hash = this.hash.digest(out.toByteArray());
-        BigInteger h = new BigInteger(hash);
+        BigInteger h = new BigInteger(1, hash);
         return h.mod(this.ec.getN());
     }
 
     private BigInteger mulSecret(BigInteger X, BigInteger S, boolean negate) {
-        BigInteger b = new BigInteger(this.randBytes(16));
+        BigInteger b = new BigInteger(1, this.randBytes(16));
         b = b.multiply(this.ec.getN()).add(S);
         BigInteger R = X.multiply(b);
         if (negate) {
