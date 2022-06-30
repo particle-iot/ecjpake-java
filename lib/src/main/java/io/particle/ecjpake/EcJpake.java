@@ -163,15 +163,47 @@ public class EcJpake {
         out.write(this.round1);
     }
 
+    public void readRound2(InputStream in) throws IOException {
+        if (this.Xp != null || this.Xm1 == null || this.Xm2 == null || this.Xp1 == null) {
+            throw new IllegalStateException("Invalid state");
+        }
+        if (this.role == Role.CLIENT) {
+            this.readCurveId(in);
+        }
+        ECPoint G = this.Xm1.add(this.Xm2).add(this.Xp1);
+        KkpRead kkp = this.readKkp(in, G, this.remoteId());
+        this.Xp = kkp.X;
+    }
+
     public void writeRound2(OutputStream out) throws IOException {
         if (this.round2 == null) {
             if (this.Xp1 == null || this.Xp2 == null || this.Xm1 == null || this.xm2 == null) {
                 throw new IllegalStateException("Invalid state");
             }
             ByteArrayOutputStream out2 = new ByteArrayOutputStream();
-            // TODO
+            ECPoint G = this.Xp1.add(this.Xp2).add(this.Xm1);
+            BigInteger xm = this.mulSecret(this.xm2, this.s, false /* negate */);
+            ECPoint Xm = G.multiply(xm);
+            if (this.role == Role.SERVER) {
+                this.writeCurveId(out2);
+            }
+            this.writePoint(out2, Xm);
+            this.writeZkp(out2, G, xm, Xm, this.localId());
+            this.round2 = out2.toByteArray();
         }
         out.write(this.round2);
+    }
+
+    public byte[] deriveSecret() {
+        if (this.secret == null) {
+            if (this.Xp == null || this.Xp2 == null || this.xm2 == null) {
+                throw new IllegalStateException("Invalid state");
+            }
+            BigInteger xm2s = this.mulSecret(this.xm2, this.s, true /* negate */);
+            ECPoint K = this.Xp.add(this.Xp2.multiply(xm2s)).multiply(this.xm2);
+            this.secret = this.hash.digest(K.getXCoord().toBigInteger().toByteArray());
+        }
+        return this.secret;
     }
 
     private KkppRead readKkpp(InputStream in, ECPoint G, byte[] id) throws IOException {
@@ -263,12 +295,40 @@ public class EcJpake {
         out.write(encoded);
     }
 
+    private void readCurveId(InputStream in) throws IOException {
+        int type = this.readByte(in);
+        if (type != 3) { // ECCurveType.named_curve
+            throw new IllegalStateException("Invalid message");
+        }
+        int id = this.readUint16(in);
+        if (id != CURVE_ID) {
+            throw new IllegalStateException("Unexpected curve type");
+        }
+    }
+
+    private void writeCurveId(OutputStream out) throws IOException {
+        out.write(3); // ECCurveType.named_curve
+        this.writeUint16(out, CURVE_ID);
+    }
+
     private void writeUint32(OutputStream out, int val) throws IOException {
         byte[] b = new byte[4];
         b[0] = (byte)((val >>> 24) & 0xff);
         b[1] = (byte)((val >>> 16) & 0xff);
         b[2] = (byte)((val >>> 8) & 0xff);
         b[3] = (byte)(val & 0xff);
+        out.write(b);
+    }
+
+    private int readUint16(InputStream in) throws IOException {
+        byte[] b = this.read(in, 2);
+        return ((int)b[0] << 8) | (int)b[1];
+    }
+
+    private void writeUint16(OutputStream out, int val) throws IOException {
+        byte[] b = new byte[2];
+        b[0] = (byte)((val >>> 8) & 0xff);
+        b[1] = (byte)(val & 0xff);
         out.write(b);
     }
 
@@ -305,10 +365,26 @@ public class EcJpake {
         return h.mod(this.ec.getN());
     }
 
+    private BigInteger mulSecret(BigInteger X, BigInteger S, boolean negate) {
+        BigInteger b = new BigInteger(this.randBytes(16));
+        b = b.multiply(this.ec.getN()).add(S);
+        BigInteger R = X.multiply(b);
+        if (negate) {
+            R = R.negate();
+        }
+        return R.mod(this.ec.getN());
+    }
+
     private KeyPair genKeyPair(ECPoint G) {
         BigInteger priv = BigIntegers.createRandomInRange(BigInteger.ONE, this.ec.getN().subtract(BigInteger.ONE), this.rand);
         ECPoint pub = G.multiply(priv);
         return new KeyPair(priv, pub);
+    }
+
+    private byte[] randBytes(int bytes) {
+        byte[] b = new byte[bytes];
+        this.rand.nextBytes(b);
+        return b;
     }
 
     private byte[] localId() {
