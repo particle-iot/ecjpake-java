@@ -7,6 +7,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.IOException;
+import java.util.Random;
 
 import org.junit.Test;
 import static org.junit.Assert.*;
@@ -50,7 +51,7 @@ class SecureRandomMock extends SecureRandom {
 
 public class EcJpakeTest {
     @Test
-    public void derivesCorrectSecretInClientRole() throws IOException {
+    public void clientRole() throws IOException {
         SecureRandomMock rand = new SecureRandomMock(
             // writeRound1()
             "0bb1b515aebb230d9d16ec3702d92738dc9cd0819bf37787c456fbe39c6bcacd" +
@@ -79,7 +80,7 @@ public class EcJpakeTest {
     }
 
     @Test
-    public void derivesCorrectSecretInServerRole() throws IOException {
+    public void serverRole() throws IOException {
         SecureRandomMock rand = new SecureRandomMock(
             // writeRound1()
             "32984ad87e029ae0ed4c4dd40a66c2ae10f5394fbe5c627249ff9e75ce927800" +
@@ -109,6 +110,34 @@ public class EcJpakeTest {
 
     @Test
     public void selfTest() throws IOException {
+        Random rand = new Random();
+        SecureRandom secRand = new SecureRandom();
+        for (int i = 0; i < 1000; ++i) {
+            int pwdLen = rand.nextInt(100) + 1;
+            byte[] pwd = new byte[pwdLen];
+            secRand.nextBytes(pwd);
+            EcJpake cli = new EcJpake(EcJpake.Role.CLIENT, pwd);
+            EcJpake serv = new EcJpake(EcJpake.Role.SERVER, pwd);
+            ByteArrayOutputStream cliRound1 = new ByteArrayOutputStream();
+            cli.writeRound1(cliRound1);
+            serv.readRound1(new ByteArrayInputStream(cliRound1.toByteArray()));
+            ByteArrayOutputStream servRound1 = new ByteArrayOutputStream();
+            serv.writeRound1(servRound1);
+            cli.readRound1(new ByteArrayInputStream(servRound1.toByteArray()));
+            ByteArrayOutputStream cliRound2 = new ByteArrayOutputStream();
+            cli.writeRound2(cliRound2);
+            serv.readRound2(new ByteArrayInputStream(cliRound2.toByteArray()));
+            ByteArrayOutputStream servRound2 = new ByteArrayOutputStream();
+            serv.writeRound2(servRound2);
+            cli.readRound2(new ByteArrayInputStream(servRound2.toByteArray()));
+            byte[] cliSecret = cli.deriveSecret();
+            byte[] servSecret = serv.deriveSecret();
+            assertArrayEquals(cliSecret, servSecret);
+        }
+    }
+
+    @Test
+    public void threePass() throws IOException {
         EcJpake cli = new EcJpake(EcJpake.Role.CLIENT, "passw0rd".getBytes());
         EcJpake serv = new EcJpake(EcJpake.Role.SERVER, "passw0rd".getBytes());
         ByteArrayOutputStream cliRound1 = new ByteArrayOutputStream();
@@ -116,14 +145,14 @@ public class EcJpakeTest {
         serv.readRound1(new ByteArrayInputStream(cliRound1.toByteArray()));
         ByteArrayOutputStream servRound1 = new ByteArrayOutputStream();
         serv.writeRound1(servRound1);
+        ByteArrayOutputStream servRound2 = new ByteArrayOutputStream();
+        serv.writeRound2(servRound2);
         cli.readRound1(new ByteArrayInputStream(servRound1.toByteArray()));
+        cli.readRound2(new ByteArrayInputStream(servRound2.toByteArray()));
+        byte[] cliSecret = cli.deriveSecret();
         ByteArrayOutputStream cliRound2 = new ByteArrayOutputStream();
         cli.writeRound2(cliRound2);
         serv.readRound2(new ByteArrayInputStream(cliRound2.toByteArray()));
-        ByteArrayOutputStream servRound2 = new ByteArrayOutputStream();
-        serv.writeRound2(servRound2);
-        cli.readRound2(new ByteArrayInputStream(servRound2.toByteArray()));
-        byte[] cliSecret = cli.deriveSecret();
         byte[] servSecret = serv.deriveSecret();
         assertArrayEquals(cliSecret, servSecret);
     }
