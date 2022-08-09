@@ -21,7 +21,6 @@ package io.particle.ecjpake;
 
 import org.bouncycastle.jce.ECNamedCurveTable;
 import org.bouncycastle.jce.spec.ECParameterSpec;
-import org.bouncycastle.math.ec.ECCurve;
 import org.bouncycastle.math.ec.ECPoint;
 import org.bouncycastle.util.BigIntegers;
 
@@ -68,12 +67,12 @@ public class EcJpake {
 
     private boolean hasPeerRound1;
     private boolean hasPeerRound2;
-    private byte[] localRound1;
-    private byte[] localRound2;
+    private byte[] myRound1;
+    private byte[] myRound2;
     private byte[] derivedSecret;
 
     private Role role;
-    private byte[] localId;
+    private byte[] myId;
     private byte[] peerId;
     private ECParameterSpec ec;
     private MessageDigest hash;
@@ -115,10 +114,10 @@ public class EcJpake {
         this.rand = random;
         this.role = role;
         if (this.role == Role.CLIENT) {
-            this.localId = CLIENT_ID;
+            this.myId = CLIENT_ID;
             this.peerId = SERVER_ID;
         } else {
-            this.localId = SERVER_ID;
+            this.myId = SERVER_ID;
             this.peerId = CLIENT_ID;
         }
         this.s = new BigInteger(1, secret);
@@ -131,8 +130,8 @@ public class EcJpake {
         this.Xp = null;
         this.hasPeerRound1 = false;
         this.hasPeerRound2 = false;
-        this.localRound1 = null;
-        this.localRound2 = null;
+        this.myRound1 = null;
+        this.myRound2 = null;
         this.derivedSecret = null;
     }
 
@@ -158,21 +157,21 @@ public class EcJpake {
      * @param out The output stream.
      */
     public void writeRound1(OutputStream out) throws IOException {
-        if (this.localRound1 == null) {
+        if (this.myRound1 == null) {
             ByteArrayOutputStream out2 = new ByteArrayOutputStream();
             KeyPair kp = this.genKeyPair(this.ec.getG());
             this.xm1 = kp.priv;
             this.Xm1 = kp.pub;
             this.writePoint(out2, this.Xm1);
-            this.writeZkp(out2, this.ec.getG(), this.xm1, this.Xm1, this.localId);
+            this.writeZkp(out2, this.ec.getG(), this.xm1, this.Xm1, this.myId);
             kp = this.genKeyPair(this.ec.getG());
             this.xm2 = kp.priv;
             this.Xm2 = kp.pub;
             this.writePoint(out2, this.Xm2);
-            this.writeZkp(out2, this.ec.getG(), this.xm2, this.Xm2, this.localId);
-            this.localRound1 = out2.toByteArray();
+            this.writeZkp(out2, this.ec.getG(), this.xm2, this.Xm2, this.myId);
+            this.myRound1 = out2.toByteArray();
         }
-        out.write(this.localRound1);
+        out.write(this.myRound1);
     }
 
     /**
@@ -181,7 +180,7 @@ public class EcJpake {
      * @param in The input stream.
      */
     public void readRound2(InputStream in) throws IOException {
-        if (!this.hasPeerRound1 || this.localRound1 == null || this.hasPeerRound2) {
+        if (!this.hasPeerRound1 || this.myRound1 == null || this.hasPeerRound2) {
             throw new IllegalStateException("Invalid protocol state");
         }
         if (this.role == Role.CLIENT) {
@@ -199,8 +198,8 @@ public class EcJpake {
      * @param out The output stream.
      */
     public void writeRound2(OutputStream out) throws IOException {
-        if (this.localRound2 == null) {
-            if (!this.hasPeerRound1 || this.localRound1 == null) {
+        if (this.myRound2 == null) {
+            if (!this.hasPeerRound1 || this.myRound1 == null) {
                 throw new IllegalStateException("Invalid protocol state");
             }
             ByteArrayOutputStream out2 = new ByteArrayOutputStream();
@@ -211,10 +210,10 @@ public class EcJpake {
                 this.writeCurveId(out2);
             }
             this.writePoint(out2, Xm);
-            this.writeZkp(out2, G, xm, Xm, this.localId);
-            this.localRound2 = out2.toByteArray();
+            this.writeZkp(out2, G, xm, Xm, this.myId);
+            this.myRound2 = out2.toByteArray();
         }
-        out.write(this.localRound2);
+        out.write(this.myRound2);
     }
 
     /**
@@ -259,7 +258,7 @@ public class EcJpake {
         this.writeZkpHashPoint(out, G);
         this.writeZkpHashPoint(out, V);
         this.writeZkpHashPoint(out, X);
-        this.writeUint32(out, id.length);
+        Util.writeUint32Be(out, id.length);
         out.write(id);
         byte[] hash = this.hash.digest(out.toByteArray());
         BigInteger h = new BigInteger(1, hash);
@@ -268,7 +267,7 @@ public class EcJpake {
 
     private void writeZkpHashPoint(OutputStream out, ECPoint point) throws IOException {
         byte[] encoded = point.getEncoded(false /* compressed */);
-        this.writeUint32(out, encoded.length);
+        Util.writeUint32Be(out, encoded.length);
         out.write(encoded);
     }
 
@@ -283,8 +282,8 @@ public class EcJpake {
     }
 
     private ECPoint readPoint(InputStream in) throws IOException {
-        int len = this.readByte(in);
-        byte[] encoded = this.read(in, len);
+        int len = Util.readUint8(in);
+        byte[] encoded = Util.readAll(in, len);
         return this.ec.getCurve().decodePoint(encoded);
     }
 
@@ -298,8 +297,8 @@ public class EcJpake {
     }
 
     private BigInteger readNum(InputStream in) throws IOException {
-        int len = this.readByte(in);
-        byte[] encoded = this.read(in, len);
+        int len = Util.readUint8(in);
+        byte[] encoded = Util.readAll(in, len);
         return new BigInteger(1, encoded);
     }
 
@@ -313,11 +312,11 @@ public class EcJpake {
     }
 
     private void readCurveId(InputStream in) throws IOException {
-        int type = this.readByte(in);
+        int type = Util.readUint8(in);
         if (type != 3) { // ECCurveType.named_curve
             throw new RuntimeException("Invalid message");
         }
-        int id = this.readUint16(in);
+        int id = Util.readUint16Be(in);
         if (id != CURVE_ID) {
             throw new RuntimeException("Unexpected curve type");
         }
@@ -325,49 +324,7 @@ public class EcJpake {
 
     private void writeCurveId(OutputStream out) throws IOException {
         out.write(3); // ECCurveType.named_curve
-        this.writeUint16(out, CURVE_ID);
-    }
-
-    private int readUint16(InputStream in) throws IOException {
-        byte[] b = this.read(in, 2);
-        return ((int)b[0] << 8) | (int)b[1];
-    }
-
-    private void writeUint16(OutputStream out, int val) throws IOException {
-        byte[] b = new byte[2];
-        b[0] = (byte)((val >>> 8) & 0xff);
-        b[1] = (byte)(val & 0xff);
-        out.write(b);
-    }
-
-    private void writeUint32(OutputStream out, int val) throws IOException {
-        byte[] b = new byte[4];
-        b[0] = (byte)((val >>> 24) & 0xff);
-        b[1] = (byte)((val >>> 16) & 0xff);
-        b[2] = (byte)((val >>> 8) & 0xff);
-        b[3] = (byte)(val & 0xff);
-        out.write(b);
-    }
-
-    private int readByte(InputStream in) throws IOException {
-        int b = in.read();
-        if (b < 0) {
-            throw new RuntimeException("Unexpected end of stream");
-        }
-        return b;
-    }
-
-    private byte[] read(InputStream in, int bytes) throws IOException {
-        byte[] b = new byte[bytes];
-        int offs = 0;
-        while (offs < bytes) {
-            int r = in.read(b, offs, bytes - offs);
-            if (r < 0) {
-                throw new RuntimeException("Unexpected end of stream");
-            }
-            offs += r;
-        }
-        return b;
+        Util.writeUint16Be(out, CURVE_ID);
     }
 
     private KeyPair genKeyPair(ECPoint G) {
