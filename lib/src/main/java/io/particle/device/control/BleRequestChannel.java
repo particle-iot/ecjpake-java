@@ -11,8 +11,8 @@ import org.bouncycastle.crypto.InvalidCipherTextException;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.security.NoSuchAlgorithmException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Map;
@@ -85,6 +85,7 @@ public class BleRequestChannel {
     }
 
     private BleRequestChannelCallback callback;
+    private SecureRandom rand;
     private byte[] preSecret;
     private int maxConcurReqs;
 
@@ -123,6 +124,20 @@ public class BleRequestChannel {
      *        concurrently.
      */
     public BleRequestChannel(byte[] secret, BleRequestChannelCallback callback, int maxConcurrentRequests) {
+        this(secret, callback, maxConcurrentRequests, new SecureRandom());
+    }
+
+    /**
+     * Construct a channel.
+     *
+     * @param secret The pre-shared secret.
+     * @param callback The channel callbacks.
+     * @param maxConcurrentRequests The maximum number of requests that can be sent to the device
+     *        concurrently.
+     * @param random The secure random number generator to use.
+     */
+    public BleRequestChannel(byte[] secret, BleRequestChannelCallback callback, int maxConcurrentRequests,
+            SecureRandom random) {
         if (secret == null || secret.length == 0) {
             throw new IllegalArgumentException("Secret cannot be empty");
         }
@@ -135,13 +150,17 @@ public class BleRequestChannel {
             throw new IllegalArgumentException("Invalid number of requests");
         }
         this.maxConcurReqs = maxConcurrentRequests;
+        if (random == null) {
+            throw new IllegalArgumentException("Random number generator instance cannot be null");
+        }
+        this.rand = random;
         this.sentReqs = new HashSet<>();
         this.queuedReqs = new LinkedHashMap<>();
         this.buf = ByteBuffer.allocate(0);
         this.buf.order(ByteOrder.LITTLE_ENDIAN);
         this.lastCliCtr = 0;
         this.lastServCtr = 0;
-        this.nextReqId = ThreadLocalRandom.current().nextInt(0, MAX_REQUEST_ID + 1);
+        this.nextReqId = (int)((random.nextInt() & 0xffffffff) % (MAX_REQUEST_ID + 1));
         this.reading = false;
         this.sending = false;
         this.closing = false;
@@ -163,7 +182,7 @@ public class BleRequestChannel {
         try {
             this.handshake = new Handshake();
             this.handshake.state = Handshake.State.ROUND_1;
-            this.handshake.jpake = new EcJpake(EcJpake.Role.CLIENT, this.preSecret);
+            this.handshake.jpake = new EcJpake(EcJpake.Role.CLIENT, this.preSecret, this.rand);
             this.preSecret = null;
             try {
                 this.handshake.cliHash = MessageDigest.getInstance(HASH_NAME);
@@ -323,8 +342,8 @@ public class BleRequestChannel {
             int reqId = entry.getKey();
             Request req = entry.getValue();
             it.remove();
-            this.writeRequest(reqId, req.type, req.data);
             this.sentReqs.add(reqId);
+            this.writeRequest(reqId, req.type, req.data);
         }
         this.sending = false;
     }
