@@ -1,6 +1,6 @@
 package io.particle.device.control;
 
-public class RequestError extends Exception {
+public class RequestError extends RuntimeException {
     public RequestError(String message) {
         super(message);
     }

@@ -40,8 +40,7 @@ public class BleRequestChannel {
     private static final int REQUEST_PACKET_OVERHEAD = TAG_SIZE + 8;
     private static final int RESPONSE_PACKET_OVERHEAD = TAG_SIZE + 8;
     private static final int HANDSHAKE_PACKET_OVERHEAD = 2;
-    private static final int MAX_REQUEST_PAYLOAD_SIZE = 65535;
-    private static final int MAX_HANDSHAKE_PAYLOAD_SIZE = 65535;
+    private static final int MAX_PAYLOAD_SIZE = 65535;
     private static final int MAX_REQUEST_ID = 65535;
 
     /**
@@ -87,7 +86,7 @@ public class BleRequestChannel {
 
     private BleRequestChannelCallback callback;
     private byte[] preSecret;
-    private int maxConcurReqCount;
+    private int maxConcurReqs;
 
     private HashSet<Integer> sentReqs;
     private LinkedHashMap<Integer, Request> queuedReqs;
@@ -103,6 +102,7 @@ public class BleRequestChannel {
     private int nextReqId;
     private boolean reading;
     private boolean sending;
+    private boolean closing;
 
     /**
      * Construct a channel.
@@ -134,7 +134,7 @@ public class BleRequestChannel {
         if (maxConcurrentRequests <= 0) {
             throw new IllegalArgumentException("Invalid number of requests");
         }
-        this.maxConcurReqCount = maxConcurrentRequests;
+        this.maxConcurReqs = maxConcurrentRequests;
         this.sentReqs = new HashSet<>();
         this.queuedReqs = new LinkedHashMap<>();
         this.buf = ByteBuffer.allocate(0);
@@ -144,6 +144,7 @@ public class BleRequestChannel {
         this.nextReqId = ThreadLocalRandom.current().nextInt(0, MAX_REQUEST_ID + 1);
         this.reading = false;
         this.sending = false;
+        this.closing = false;
         this.state = State.NEW;
     }
 
@@ -262,7 +263,7 @@ public class BleRequestChannel {
      * @return The request ID.
      */
     public int sendRequest(int type, byte[] data) {
-        if (data != null && data.length > MAX_REQUEST_PAYLOAD_SIZE) {
+        if (data != null && data.length > MAX_PAYLOAD_SIZE) {
             throw new IllegalArgumentException("Payload data is too long");
         }
         if (this.state != State.OPEN && this.state != State.OPENING) {
@@ -277,9 +278,7 @@ public class BleRequestChannel {
             req.type = type;
             req.data = (data != null) ? data : new byte[0];
             this.queuedReqs.put(reqId, req);
-            if (this.state == State.OPEN) {
-                this.sendNextRequest();
-            }
+            this.sendNextRequest();
             return reqId;
         } catch (Exception e) {
             this.closeWithError(new RequestError("Channel error", e));
@@ -318,7 +317,7 @@ public class BleRequestChannel {
             return;
         }
         this.sending = true;
-        while (!this.queuedReqs.isEmpty() && this.sentReqs.size() < this.maxConcurReqCount) {
+        while (!this.queuedReqs.isEmpty() && this.sentReqs.size() < this.maxConcurReqs) {
             Iterator<Map.Entry<Integer, Request>> it = this.queuedReqs.entrySet().iterator();
             Map.Entry<Integer, Request> entry = it.next();
             int reqId = entry.getKey();
@@ -372,7 +371,7 @@ public class BleRequestChannel {
     private void readHandshake(ByteBuffer packet) {
         switch (this.handshake.state) {
         case ROUND_1: {
-            packet.position(packet.position() + 2);
+            packet.getShort(); // Skip header
             byte[] servRound1 = new byte[packet.remaining()];
             packet.get(servRound1);
             this.handshake.jpake.readRound1(servRound1);
@@ -382,7 +381,7 @@ public class BleRequestChannel {
             break;
         }
         case ROUND_2: {
-            packet.position(packet.position() + 2);
+            packet.getShort();
             byte[] servRound2 = new byte[packet.remaining()];
             packet.get(servRound2);
             this.handshake.jpake.readRound2(servRound2);
@@ -400,7 +399,7 @@ public class BleRequestChannel {
             break;
         }
         case CONFIRM: {
-            packet.position(packet.position() + 2);
+            packet.getShort();
             byte[] servConfirm = new byte[packet.remaining()];
             packet.get(servConfirm);
             byte[] expectedConfirm = genConfirm(this.handshake.secret, SERVER_ID, CLIENT_ID, this.handshake.servHash.digest());
@@ -414,6 +413,7 @@ public class BleRequestChannel {
             this.handshake = null;
             this.state = State.OPEN;
             this.callback.onChannelOpen();
+            this.sendNextRequest();
             break;
         }
         default:
@@ -422,8 +422,8 @@ public class BleRequestChannel {
     }
 
     private void writeHandshake(byte[] data) {
-        if (data.length > MAX_HANDSHAKE_PAYLOAD_SIZE) {
-            throw new RuntimeException("Handshake packet is too long"); // Internal error
+        if (data.length > MAX_PAYLOAD_SIZE) {
+            throw new RequestChannelError("Handshake packet is too long"); // Internal error
         }
         ByteBuffer b = ByteBuffer.allocate(data.length + HANDSHAKE_PACKET_OVERHEAD);
         b.order(ByteOrder.LITTLE_ENDIAN);
@@ -439,7 +439,7 @@ public class BleRequestChannel {
         try {
             out = this.cipher.processPacket(in, 0, in.length);
         } catch (InvalidCipherTextException e) {
-            throw new RuntimeException("Decryption error", e);
+            throw new RequestChannelError("Decryption error", e);
         }
         return out;
     }
@@ -452,7 +452,7 @@ public class BleRequestChannel {
             newBuf.order(this.buf.order());
             newBuf.put(this.buf);
             newBuf.limit(newBuf.position());
-            newBuf.position(0);
+            newBuf.rewind();
             this.buf = newBuf;
         }
         this.buf.mark();
@@ -463,9 +463,10 @@ public class BleRequestChannel {
     }
 
     private void closeWithError(RequestError err) {
-        if (this.state == State.CLOSED) {
+        if (this.state == State.CLOSED || this.closing) {
             return;
         }
+        this.closing = true;
         for (int reqId: this.sentReqs) {
             this.callback.onRequestError(reqId, err);
         }
@@ -474,6 +475,7 @@ public class BleRequestChannel {
             this.callback.onRequestError(reqId, err);
         }
         this.queuedReqs.clear();
+        this.closing = false;
         this.state = State.CLOSED;
     }
 
