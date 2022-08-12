@@ -1,4 +1,6 @@
-package io.particle.ecjpake;
+package io.particle.device.control;
+
+import io.particle.crypto.EcJpake;
 
 import org.bouncycastle.crypto.engines.AESEngine;
 import org.bouncycastle.crypto.modes.CCMBlockCipher;
@@ -10,20 +12,16 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
+import java.util.concurrent.ThreadLocalRandom;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.Map;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.Arrays;
 import java.util.Iterator;
 
 public class BleRequestChannel {
-    public static final int DEFAULT_REQUEST_TIMEOUT = 60000;
-    public static final int DEFAULT_HANDSHAKE_TIMEOUT = 10000;
     public static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 1;
 
     private static final String HASH_NAME = "SHA-256";
@@ -62,20 +60,15 @@ public class BleRequestChannel {
     }
 
     private static class Request {
-        int id;
         int type;
         byte[] data;
-        boolean sent;
     }
 
     private BleRequestChannelCallbacks callbacks;
-    private ScheduledExecutorService executor;
     private byte[] preSecret;
     private int maxConcurReqCount;
-    private int defaultReqTimeout;
-    private int handshakeTimeout;
 
-    private HashMap<Integer, Request> sentReqs;
+    private HashSet<Integer> sentReqs;
     private LinkedHashMap<Integer, Request> queuedReqs;
     private CCMBlockCipher cipher;
     private KeyParameter cipherKey;
@@ -86,83 +79,34 @@ public class BleRequestChannel {
     private byte[] servNonce;
     private int lastCliCtr;
     private int lastServCtr;
-    private int lastReqId;
+    private int nextReqId;
     private boolean reading;
     private boolean sending;
 
-    public class Builder {
-        public Builder secret(byte[] secret) {
-            if (secret == null || secret.length == 0) {
-                throw new IllegalArgumentException("Secret cannot be empty");
-            }
-            BleRequestChannel.this.preSecret = secret;
-            return this;
-        }
-
-        public Builder callbacks(BleRequestChannelCallbacks callbacks) {
-            if (callbacks == null) {
-                throw new IllegalArgumentException("Callbacks instance cannot be null");
-            }
-            BleRequestChannel.this.callbacks = callbacks;
-            return this;
-        }
-
-        public Builder executorService(ScheduledExecutorService executor) {
-            BleRequestChannel.this.executor = executor;
-            return this;
-        }
-
-        public Builder maxConcurrentRequests(int count) {
-            if (count <= 0) {
-                throw new IllegalArgumentException("Invalid number of concurrent requests");
-            }
-            BleRequestChannel.this.maxConcurReqCount = count;
-            return this;
-        }
-
-        public Builder handshakeTimeout(int ms) {
-            if (ms < 0) {
-                throw new IllegalArgumentException("Invalid handshake timeout");
-            }
-            BleRequestChannel.this.handshakeTimeout = ms;
-            return this;
-        }
-
-        public Builder defaultRequestTimeout(int ms) {
-            if (ms < 0) {
-                throw new IllegalArgumentException("Invalid request timeout");
-            }
-            BleRequestChannel.this.defaultReqTimeout = ms;
-            return this;
-        }
-
-        public BleRequestChannel build() {
-            if (BleRequestChannel.this.preSecret == null) {
-                throw new IllegalStateException("Secret is not set");
-            }
-            if (BleRequestChannel.this.callbacks == null) {
-                throw new IllegalStateException("Callbacks instance is not set");
-            }
-            return BleRequestChannel.this;
-        }
-
-        // Use BleRequestChannel.newBuilder() to create instances of this class
-        private Builder() {
-        }
+    public BleRequestChannel(byte[] secret, BleRequestChannelCallbacks callbacks) {
+        this(secret, callbacks, DEFAULT_MAX_CONCURRENT_REQUESTS);
     }
 
-    // Use a Builder to create instances of this class
-    private BleRequestChannel() {
-        this.maxConcurReqCount = DEFAULT_MAX_CONCURRENT_REQUESTS;
-        this.defaultReqTimeout = DEFAULT_REQUEST_TIMEOUT;
-        this.handshakeTimeout = DEFAULT_HANDSHAKE_TIMEOUT;
-        this.sentReqs = new HashMap<>();
+    public BleRequestChannel(byte[] secret, BleRequestChannelCallbacks callbacks, int maxConcurrentRequests) {
+        if (secret == null || secret.length == 0) {
+            throw new IllegalArgumentException("Secret cannot be empty");
+        }
+        this.preSecret = secret;
+        if (callbacks == null) {
+            throw new IllegalArgumentException("Callbacks instance cannot be null");
+        }
+        this.callbacks = callbacks;
+        if (maxConcurrentRequests <= 0) {
+            throw new IllegalArgumentException("Invalid number of requests");
+        }
+        this.maxConcurReqCount = maxConcurrentRequests;
+        this.sentReqs = new HashSet<>();
         this.queuedReqs = new LinkedHashMap<>();
         this.buf = ByteBuffer.allocate(0);
         this.buf.order(ByteOrder.LITTLE_ENDIAN);
         this.lastCliCtr = 0;
         this.lastServCtr = 0;
-        this.lastReqId = 0;
+        this.nextReqId = ThreadLocalRandom.current().nextInt(0, MAX_REQUEST_ID + 1);
         this.reading = false;
         this.sending = false;
         this.state = State.NEW;
@@ -183,13 +127,7 @@ public class BleRequestChannel {
             } catch (NoSuchAlgorithmException e) {
                 throw new UnsupportedOperationException("Unsupported hash algorithm", e);
             }
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            try {
-                this.handshake.jpake.writeRound1(out);
-            } catch (Exception e) {
-                throw new RequestChannelError("Failed to serialize handshake message");
-            }
-            byte[] cliRound1 = out.toByteArray();
+            byte[] cliRound1 = this.handshake.jpake.getRound1();
             this.handshake.cliHash.update(cliRound1);
             this.handshake.servHash.update(cliRound1);
             this.state = State.OPENING;
@@ -253,10 +191,6 @@ public class BleRequestChannel {
     }
 
     public int sendRequest(int type, byte[] data) {
-        return this.sendRequest(type, data, this.defaultReqTimeout);
-    }
-
-    public int sendRequest(int type, byte[] data, int timeout) {
         if (data != null && data.length > MAX_REQUEST_PAYLOAD_SIZE) {
             throw new IllegalArgumentException("Payload data is too long");
         }
@@ -264,19 +198,18 @@ public class BleRequestChannel {
             throw new IllegalStateException("Invalid channel state");
         }
         try {
-            if (this.lastReqId >= MAX_REQUEST_ID) {
-                this.lastReqId = 0;
+            int reqId = this.nextReqId;
+            if (++this.nextReqId > MAX_REQUEST_ID) {
+                this.nextReqId = 0;
             }
             Request req = new Request();
-            req.id = ++this.lastReqId;
             req.type = type;
             req.data = (data != null) ? data : new byte[0];
-            req.sent = false;
-            this.queuedReqs.put(req.id, req);
+            this.queuedReqs.put(reqId, req);
             if (this.state == State.OPEN) {
                 this.sendNextRequest();
             }
-            return req.id;
+            return reqId;
         } catch (Exception e) {
             this.closeWithError(new RequestError("Channel error", e));
             throw e;
@@ -284,15 +217,18 @@ public class BleRequestChannel {
     }
 
     public boolean cancelRequest(int id) {
-        return false; // TODO
+        if (this.state != State.OPEN && this.state != State.OPENING) {
+            return false;
+        }
+        if (this.sentReqs.remove(id) || this.queuedReqs.remove(id) != null) {
+            this.sendNextRequest();
+            return true;
+        }
+        return false;
     }
 
     public State state() {
         return this.state;
-    }
-
-    public static Builder newBuilder() {
-        return new BleRequestChannel().new Builder();
     }
 
     private void sendNextRequest() {
@@ -300,14 +236,14 @@ public class BleRequestChannel {
             return;
         }
         this.sending = true;
-        Iterator<Map.Entry<Integer, Request>> it = this.queuedReqs.entrySet().iterator();
-        while (it.hasNext() && this.sentReqs.size() < this.maxConcurReqCount) {
-            Request req = it.next().getValue();
+        while (!this.queuedReqs.isEmpty() && this.sentReqs.size() < this.maxConcurReqCount) {
+            Iterator<Map.Entry<Integer, Request>> it = this.queuedReqs.entrySet().iterator();
+            Map.Entry<Integer, Request> entry = it.next();
+            int reqId = entry.getKey();
+            Request req = entry.getValue();
             it.remove();
-            this.writeRequest(req);
-            req.data = null;
-            req.sent = true;
-            this.sentReqs.put(req.id, req);
+            this.writeRequest(reqId, req.type, req.data);
+            this.sentReqs.add(reqId);
         }
         this.sending = false;
     }
@@ -322,8 +258,7 @@ public class BleRequestChannel {
         ByteBuffer b = ByteBuffer.wrap(data);
         b.order(ByteOrder.LITTLE_ENDIAN);
         int reqId = b.getShort() & 0xffff;
-        Request req = this.sentReqs.get(reqId);
-        if (req != null) {
+        if (this.sentReqs.contains(reqId)) {
             int result = b.getInt();
             data = new byte[b.remaining()];
             b.get(data);
@@ -333,20 +268,20 @@ public class BleRequestChannel {
         }
     }
 
-    private void writeRequest(Request req) {
-        ByteBuffer b = ByteBuffer.allocate(req.data.length + REQUEST_PACKET_OVERHEAD);
+    private void writeRequest(int id, int type, byte[] data) {
+        ByteBuffer b = ByteBuffer.allocate(data.length + REQUEST_PACKET_OVERHEAD);
         b.order(ByteOrder.LITTLE_ENDIAN);
-        b.putShort((short)(req.data.length & 0xffff));
+        b.putShort((short)(data.length & 0xffff));
         b.mark();
-        b.putShort((short)(req.id & 0xffff));
-        b.putShort((short)(req.type & 0xffff));
+        b.putShort((short)(id & 0xffff));
+        b.putShort((short)(type & 0xffff));
         b.putShort((short)0); // Reserved
-        b.put(req.data);
-        byte[] data = b.array();
+        b.put(data);
+        data = b.array();
         byte[] plain = Arrays.copyOfRange(data, 2, data.length - TAG_SIZE);
         byte[] aad = Arrays.copyOfRange(data, 0, 2);
         byte[] nonce = genNonce(this.cliNonce, ++this.lastCliCtr, false /* isResp */);
-        data = this.runCipher(true /* encrypt */, data, nonce, aad);
+        data = this.runCipher(true /* encrypt */, plain, nonce, aad);
         b.reset();
         b.put(data);
         this.callbacks.onChannelWrite(b.array());
@@ -358,12 +293,7 @@ public class BleRequestChannel {
             packet.position(packet.position() + 2);
             byte[] servRound1 = new byte[packet.remaining()];
             packet.get(servRound1);
-            ByteArrayInputStream in = new ByteArrayInputStream(servRound1);
-            try {
-                this.handshake.jpake.readRound1(in);
-            } catch (Exception e) {
-                throw new RequestChannelError("Failed to parse handshake message", e);
-            }
+            this.handshake.jpake.readRound1(servRound1);
             this.handshake.cliHash.update(servRound1);
             this.handshake.servHash.update(servRound1);
             this.handshake.state = Handshake.State.ROUND_2;
@@ -373,21 +303,10 @@ public class BleRequestChannel {
             packet.position(packet.position() + 2);
             byte[] servRound2 = new byte[packet.remaining()];
             packet.get(servRound2);
-            ByteArrayInputStream in = new ByteArrayInputStream(servRound2);
-            try {
-                this.handshake.jpake.readRound2(in);
-            } catch (Exception e) {
-                throw new RequestChannelError("Failed to parse handshake message", e);
-            }
+            this.handshake.jpake.readRound2(servRound2);
             this.handshake.cliHash.update(servRound2);
             this.handshake.servHash.update(servRound2);
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            try {
-                this.handshake.jpake.writeRound2(out);
-            } catch (Exception e) {
-                throw new RequestChannelError("Failed to serialize handshake message");
-            }
-            byte[] cliRound2 = out.toByteArray();
+            byte[] cliRound2 = this.handshake.jpake.getRound2();
             this.writeHandshake(cliRound2);
             this.handshake.cliHash.update(cliRound2);
             this.handshake.servHash.update(cliRound2);
@@ -465,14 +384,14 @@ public class BleRequestChannel {
         if (this.state == State.CLOSED) {
             return;
         }
-        for (Request req: sentReqs.values()) {
-            this.callbacks.onRequestError(req.id, err);
+        for (int reqId: this.sentReqs) {
+            this.callbacks.onRequestError(reqId, err);
         }
-        sentReqs.clear();
-        for (Request req: queuedReqs.values()) {
-            this.callbacks.onRequestError(req.id, err);
+        this.sentReqs.clear();
+        for (int reqId: this.queuedReqs.keySet()) {
+            this.callbacks.onRequestError(reqId, err);
         }
-        queuedReqs.clear();
+        this.queuedReqs.clear();
         this.state = State.CLOSED;
     }
 

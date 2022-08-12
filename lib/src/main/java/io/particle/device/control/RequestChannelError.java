@@ -1,4 +1,4 @@
-package io.particle.ecjpake;
+package io.particle.device.control;
 
 public class RequestChannelError extends RuntimeException {
     public RequestChannelError(String message) {

@@ -1,10 +1,8 @@
-package io.particle.ecjpake.test;
+package io.particle.device.control.test;
 
-import io.particle.ecjpake.BleRequestChannel;
-import io.particle.ecjpake.BleRequestChannelCallbacks;
-import io.particle.ecjpake.RequestError;
-
-import java.nio.ByteBuffer;
+import io.particle.device.control.BleRequestChannel;
+import io.particle.device.control.BleRequestChannelCallbacks;
+import io.particle.device.control.RequestError;
 
 import org.junit.Test;
 import static org.junit.Assert.*;
@@ -31,9 +29,6 @@ public class BleRequestChannelTest {
     @Test
     public void itWorks() {
         Callbacks callbacks = new Callbacks();
-        BleRequestChannel channel = BleRequestChannel.newBuilder()
-                .setSecret("passw0rd".getBytes())
-                .setCallbacks(callbacks)
-                .build();
+        BleRequestChannel channel = new BleRequestChannel("passw0rd".getBytes(), callbacks);
     }
 }

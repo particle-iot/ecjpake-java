@@ -1,4 +1,4 @@
-package io.particle.ecjpake;
+package io.particle.device.control;
 
 public class RequestError extends Exception {
     public RequestError(String message) {
