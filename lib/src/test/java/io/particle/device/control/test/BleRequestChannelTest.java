@@ -1,13 +1,13 @@
 package io.particle.device.control.test;
 
 import io.particle.device.control.BleRequestChannel;
-import io.particle.device.control.BleRequestChannelCallbacks;
+import io.particle.device.control.BleRequestChannelCallback;
 import io.particle.device.control.RequestError;
 
 import org.junit.Test;
 import static org.junit.Assert.*;
 
-class Callbacks implements BleRequestChannelCallbacks {
+class Callback implements BleRequestChannelCallback {
     @Override
     public void onChannelOpen() {
     }
@@ -28,7 +28,7 @@ class Callbacks implements BleRequestChannelCallbacks {
 public class BleRequestChannelTest {
     @Test
     public void itWorks() {
-        Callbacks callbacks = new Callbacks();
-        BleRequestChannel channel = new BleRequestChannel("passw0rd".getBytes(), callbacks);
+        Callback callback = new Callback();
+        BleRequestChannel channel = new BleRequestChannel("passw0rd".getBytes(), callback);
     }
 }

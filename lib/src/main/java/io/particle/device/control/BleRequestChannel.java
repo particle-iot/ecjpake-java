@@ -21,7 +21,13 @@ import java.util.HashSet;
 import java.util.Arrays;
 import java.util.Iterator;
 
+/**
+ * An implementation of the Device OS control request protocol for BLE.
+ */
 public class BleRequestChannel {
+    /**
+     * The default maximum number of requests that can be sent to the device concurrently.
+     */
     public static final int DEFAULT_MAX_CONCURRENT_REQUESTS = 1;
 
     private static final String HASH_NAME = "SHA-256";
@@ -38,10 +44,25 @@ public class BleRequestChannel {
     private static final int MAX_HANDSHAKE_PAYLOAD_SIZE = 65535;
     private static final int MAX_REQUEST_ID = 65535;
 
+    /**
+     * The channel state.
+     */
     public enum State {
+        /**
+         * The channel is ready to be opened.
+         */
         NEW,
+        /**
+         * The channel is being opened.
+         */
         OPENING,
+        /**
+         * The channel is open.
+         */
         OPEN,
+        /**
+         * The channel is closed.
+         */
         CLOSED
     }
 
@@ -64,7 +85,7 @@ public class BleRequestChannel {
         byte[] data;
     }
 
-    private BleRequestChannelCallbacks callbacks;
+    private BleRequestChannelCallback callback;
     private byte[] preSecret;
     private int maxConcurReqCount;
 
@@ -83,19 +104,33 @@ public class BleRequestChannel {
     private boolean reading;
     private boolean sending;
 
-    public BleRequestChannel(byte[] secret, BleRequestChannelCallbacks callbacks) {
-        this(secret, callbacks, DEFAULT_MAX_CONCURRENT_REQUESTS);
+    /**
+     * Construct a channel.
+     *
+     * @param secret The pre-shared secret.
+     * @param callback The channel callbacks.
+     */
+    public BleRequestChannel(byte[] secret, BleRequestChannelCallback callback) {
+        this(secret, callback, DEFAULT_MAX_CONCURRENT_REQUESTS);
     }
 
-    public BleRequestChannel(byte[] secret, BleRequestChannelCallbacks callbacks, int maxConcurrentRequests) {
+    /**
+     * Construct a channel.
+     *
+     * @param secret The pre-shared secret.
+     * @param callback The channel callbacks.
+     * @param maxConcurrentRequests The maximum number of requests that can be sent to the device
+     *        concurrently.
+     */
+    public BleRequestChannel(byte[] secret, BleRequestChannelCallback callback, int maxConcurrentRequests) {
         if (secret == null || secret.length == 0) {
             throw new IllegalArgumentException("Secret cannot be empty");
         }
         this.preSecret = secret;
-        if (callbacks == null) {
-            throw new IllegalArgumentException("Callbacks instance cannot be null");
+        if (callback == null) {
+            throw new IllegalArgumentException("Callback instance cannot be null");
         }
-        this.callbacks = callbacks;
+        this.callback = callback;
         if (maxConcurrentRequests <= 0) {
             throw new IllegalArgumentException("Invalid number of requests");
         }
@@ -112,7 +147,15 @@ public class BleRequestChannel {
         this.state = State.NEW;
     }
 
-    public void open() throws RequestChannelError {
+    /**
+     * Open the channel.
+     *
+     * The {@link BleRequestChannelCallback#onChannelOpen} callback will be invoked when the channel
+     * has been opened.
+     *
+     * It is the responsibility of the calling code to track the timeout of the operation.
+     */
+    public void open() {
         if (this.state != State.NEW) {
             throw new IllegalStateException("Invalid channel state");
         }
@@ -138,6 +181,13 @@ public class BleRequestChannel {
         }
     }
 
+    /**
+     * Close the channel.
+     *
+     * All pending requests will be cancelled with an error.
+     *
+     * A closed channel cannot be reopened.
+     */
     public void close() {
         if (this.state == State.CLOSED) {
             return;
@@ -145,6 +195,11 @@ public class BleRequestChannel {
         this.closeWithError(new RequestError("Channel closed"));
     }
 
+    /**
+     * Read data received from the device.
+     *
+     * @param data The received data.
+     */
     public void read(byte[] data) {
         if (this.state != State.OPEN && this.state != State.OPENING) {
             throw new IllegalStateException("Invalid channel state");
@@ -186,10 +241,26 @@ public class BleRequestChannel {
         }
     }
 
+    /**
+     * Send a request to the device.
+     *
+     * @param type The request type.
+     * @return The request ID.
+     */
     public int sendRequest(int type) {
         return this.sendRequest(type, null);
     }
 
+    /**
+     * Send a request to the device.
+     *
+     * It is the responsibility of the calling code to track the timeout of the operation.
+     * If necessary, the request can be cancelled at any time via {@link #cancelRequest}.
+     *
+     * @param type The request type.
+     * @param type The payload data.
+     * @return The request ID.
+     */
     public int sendRequest(int type, byte[] data) {
         if (data != null && data.length > MAX_REQUEST_PAYLOAD_SIZE) {
             throw new IllegalArgumentException("Payload data is too long");
@@ -216,6 +287,12 @@ public class BleRequestChannel {
         }
     }
 
+    /**
+     * Cancel a request.
+     *
+     * @param id The request ID.
+     * @return `true` if the request was cancelled, otherwise `false`.
+     */
     public boolean cancelRequest(int id) {
         if (this.state != State.OPEN && this.state != State.OPENING) {
             return false;
@@ -227,6 +304,11 @@ public class BleRequestChannel {
         return false;
     }
 
+    /**
+     * Get the channel state.
+     *
+     * @return The channel state.
+     */
     public State state() {
         return this.state;
     }
@@ -263,7 +345,7 @@ public class BleRequestChannel {
             data = new byte[b.remaining()];
             b.get(data);
             this.sentReqs.remove(reqId);
-            this.callbacks.onRequestResponse(reqId, result, data);
+            this.callback.onRequestResponse(reqId, result, data);
             this.sendNextRequest();
         }
     }
@@ -284,7 +366,7 @@ public class BleRequestChannel {
         data = this.runCipher(true /* encrypt */, plain, nonce, aad);
         b.reset();
         b.put(data);
-        this.callbacks.onChannelWrite(b.array());
+        this.callback.onChannelWrite(b.array());
     }
 
     private void readHandshake(ByteBuffer packet) {
@@ -331,7 +413,7 @@ public class BleRequestChannel {
             this.servNonce = Arrays.copyOfRange(this.handshake.secret, 24, 32);
             this.handshake = null;
             this.state = State.OPEN;
-            this.callbacks.onChannelOpen();
+            this.callback.onChannelOpen();
             break;
         }
         default:
@@ -347,7 +429,7 @@ public class BleRequestChannel {
         b.order(ByteOrder.LITTLE_ENDIAN);
         b.putShort((short)data.length);
         b.put(data);
-        this.callbacks.onChannelWrite(b.array());
+        this.callback.onChannelWrite(b.array());
     }
 
     private byte[] runCipher(boolean encrypt, byte[] in, byte[] nonce, byte[] aad) {
@@ -385,11 +467,11 @@ public class BleRequestChannel {
             return;
         }
         for (int reqId: this.sentReqs) {
-            this.callbacks.onRequestError(reqId, err);
+            this.callback.onRequestError(reqId, err);
         }
         this.sentReqs.clear();
         for (int reqId: this.queuedReqs.keySet()) {
-            this.callbacks.onRequestError(reqId, err);
+            this.callback.onRequestError(reqId, err);
         }
         this.queuedReqs.clear();
         this.state = State.CLOSED;
