@@ -160,7 +160,7 @@ public class BleRequestChannel {
         this.buf.order(ByteOrder.LITTLE_ENDIAN);
         this.lastCliCtr = 0;
         this.lastServCtr = 0;
-        this.nextReqId = (int)((random.nextInt() & 0xffffffff) % (MAX_REQUEST_ID + 1));
+        this.nextReqId = (int)((random.nextInt() & 0xffffffffl) % (MAX_REQUEST_ID + 1));
         this.reading = false;
         this.sending = false;
         this.closing = false;
